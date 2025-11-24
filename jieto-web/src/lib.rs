@@ -163,12 +163,12 @@ where
 #[derive(Default, Debug)]
 pub struct AppState {
     #[cfg(feature = "database")]
-    pub db_manager: Arc<jieto_db::database::DbManager>,
+    pub db_manager: Arc<DbManager>,
 }
 
 #[cfg(feature = "database")]
 impl AppState {
-    fn with_db(&mut self, db_manager:  Arc<jieto_db::database::DbManager>) {
+    fn with_db(&mut self, db_manager:  Arc<DbManager>) {
         self.db_manager = db_manager;
     }
 }
