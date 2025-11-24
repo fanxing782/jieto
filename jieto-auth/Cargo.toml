@@ -1,0 +1,13 @@
+[package]
+name = "jieto-auth"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+totp = ["dep:totp-rs"]
+
+[dependencies]
+totp-rs = { version = "5.7.0" ,features = ["otpauth","gen_secret"] ,optional = true}
+secrecy = {workspace = true}
+anyhow = { workspace = true }
+thiserror = { workspace = true }

@@ -2,17 +2,18 @@ use crate::config::{ApplicationConfig, Log};
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpResponse, HttpServer, Responder, ResponseError, web};
 use flexi_logger::{
-    Age, Cleanup, Criterion, Duplicate, FileSpec, Logger, Naming, WriteMode, detailed_format,
+    Age, Cleanup, Criterion, Duplicate, FileSpec, Logger, Naming, WriteMode,
 };
 use serde::Serialize;
 use thiserror::Error;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use actix_cors::Cors;
 use jieto_db::database::DbManager;
 
 mod config;
 
 #[cfg(feature = "database")]
-pub static GLOBAL_DBMANAGER:OnceLock<DbManager> = OnceLock::new();
+pub static GLOBAL_DBMANAGER:OnceLock<Arc<DbManager>> = OnceLock::new();
 
 
 
@@ -106,14 +107,19 @@ pub enum WebError {
     #[cfg(feature = "database")]
     #[error("[EX]:{0}")]
     Execution(#[from] sqlx::Error),
+    #[error("[AU]:{0}")]
+    #[cfg(feature = "auth")]
+    Auth(#[from] jieto_auth::error::AuthError),
 }
 
 impl ResponseError for WebError {
     fn status_code(&self) -> actix_web::http::StatusCode {
         match self {
-            WebError::Web(_) | WebError::DataSource(_) | WebError::Execution(_) => {
-                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
-            }
+            WebError::Web(_) =>actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+            #[cfg(feature = "database")]
+            WebError::DataSource(_) | WebError::Execution(_) =>actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+            #[cfg(feature = "auth")]
+            WebError::Auth(_) =>actix_web::http::StatusCode::FORBIDDEN,
             WebError::Business(..) => actix_web::http::StatusCode::default(),
         }
     }
@@ -157,12 +163,12 @@ where
 #[derive(Default, Debug)]
 pub struct AppState {
     #[cfg(feature = "database")]
-    pub db_manager: jieto_db::database::DbManager,
+    pub db_manager: Arc<jieto_db::database::DbManager>,
 }
 
 #[cfg(feature = "database")]
 impl AppState {
-    fn with_db(&mut self, db_manager:  jieto_db::database::DbManager) {
+    fn with_db(&mut self, db_manager:  Arc<jieto_db::database::DbManager>) {
         self.db_manager = db_manager;
     }
 }
@@ -175,6 +181,22 @@ fn parse_age(age_str: &str) -> Option<Age> {
         "day" => Some(Age::Day),
         _ => None,
     }
+}
+
+
+fn jieto_detailed_format(
+    w: &mut dyn std::io::Write,
+    now: &mut flexi_logger::DeferredNow,
+    record: &log::Record,
+) -> Result<(), std::io::Error> {
+    write!(
+        w,
+        "[{}] {} [{}] {}",
+        now.format("%Y-%m-%d %H:%M:%S"), // ← 必须有这一行！
+        record.level(),
+        record.target(),
+        &record.args()
+    )
 }
 
 fn init_logger(config: &Log, app_name: &str) -> anyhow::Result<()> {
@@ -227,7 +249,7 @@ fn init_logger(config: &Log, app_name: &str) -> anyhow::Result<()> {
         )
         .write_mode(WriteMode::BufferAndFlush)
         .duplicate_to_stderr(Duplicate::All)
-        .format_for_files(detailed_format)
+        .format_for_files(jieto_detailed_format)
         .start()?;
 
     Ok(())
@@ -248,16 +270,28 @@ where
     #[cfg(feature = "database")]
     {
         let db_manager = jieto_db::jieto_db_init("db.toml").await?;
+        let db_manager = Arc::new(db_manager);
         let db_manager = GLOBAL_DBMANAGER.get_or_init(|| db_manager);
         state.with_db(db_manager.clone());
+
+
     }
 
     init().await;
 
     let app_state = web::Data::new(state);
     let _server = HttpServer::new(move || {
+
+        let cors = Cors::default()
+            .allow_any_origin()       // 允许任意域名（仅开发用！）
+            .allow_any_method()
+            .allow_any_header()
+            .supports_credentials()   // 如果需要携带 cookie
+            .max_age(3600);
+
         App::new()
             .app_data(app_state.clone())
+            .wrap(cors)
             .wrap(actix_web::middleware::Logger::default())
             .configure(|cfg| configure_fn(cfg))
     })

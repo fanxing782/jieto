@@ -18,6 +18,8 @@ mysql = ["dep:sqlx","jieto-db/mysql"]
 sqlite = ["dep:sqlx","jieto-db/sqlite"]
 postgres = ["dep:sqlx","jieto-db/postgres"]
 redis = ["dep:deadpool-redis", "jieto-db/redis"]
+auth = ["dep:jieto-auth"]
+totp = ["jieto-auth/totp"]
 
 [dependencies]
 serde = { workspace = true }
@@ -31,5 +33,7 @@ time = { workspace = true }
 flexi_logger = { workspace = true }
 deadpool-redis = { workspace = true, optional = true }
 
-jieto-db = { path = "../jieto-db", optional = true }
+jieto-auth = {path = "../jieto-auth", optional = true}
+jieto-db = { path = "../jieto-db",optional = true }
 sqlx = {workspace = true,optional = true}
+actix-cors = "0.7.1"

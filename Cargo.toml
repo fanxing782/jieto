@@ -1,5 +1,5 @@
 [workspace]
-members = ["example", "jieto-db","jieto-web"]
+members = ["example", "jieto-auth", "jieto-db","jieto-web"]
 
 [workspace.dependencies]
 anyhow = "1.0.100"
