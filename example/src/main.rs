@@ -25,7 +25,9 @@ async fn hello(data: web::Data<AppState>) -> JietoResult<User> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    jieto_web_start("application.toml", |cfg| {
+    jieto_web_start("application.toml", ||async {
+
+    },|cfg| {
         cfg.service(hello);
     })
     .await?;

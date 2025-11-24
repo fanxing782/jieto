@@ -6,8 +6,15 @@ use flexi_logger::{
 };
 use serde::Serialize;
 use thiserror::Error;
+use std::sync::OnceLock;
+use jieto_db::database::DbManager;
 
 mod config;
+
+#[cfg(feature = "database")]
+pub static GLOBAL_DBMANAGER:OnceLock<DbManager> = OnceLock::new();
+
+
 
 #[derive(Debug, Clone)]
 pub struct BusinessError {
@@ -67,7 +74,7 @@ where
         })
     }
 
-    pub fn ok_empty() -> JietoResult<()> {
+    pub fn ok_empty() -> JietoResult<T> {
         Ok(ApiResult {
             code: Self::SUCCESS_CODE,
             msg: "success".to_string(),
@@ -155,7 +162,7 @@ pub struct AppState {
 
 #[cfg(feature = "database")]
 impl AppState {
-    fn with_db(&mut self, db_manager: jieto_db::database::DbManager) {
+    fn with_db(&mut self, db_manager:  jieto_db::database::DbManager) {
         self.db_manager = db_manager;
     }
 }
@@ -226,9 +233,11 @@ fn init_logger(config: &Log, app_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn jieto_web_start<F>(path: &str, configure_fn: F) -> anyhow::Result<()>
+pub async fn jieto_web_start<F,Init,Fut>(path: &str, init:Init , configure_fn: F) -> anyhow::Result<()>
 where
     F: Fn(&mut ServiceConfig) + Clone + Send + Sync + 'static,
+    Init: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
 {
     let config = ApplicationConfig::from_toml(path).await?;
 
@@ -239,8 +248,11 @@ where
     #[cfg(feature = "database")]
     {
         let db_manager = jieto_db::jieto_db_init("db.toml").await?;
-        state.with_db(db_manager);
+        let db_manager = GLOBAL_DBMANAGER.get_or_init(|| db_manager);
+        state.with_db(db_manager.clone());
     }
+
+    init().await;
 
     let app_state = web::Data::new(state);
     let _server = HttpServer::new(move || {
