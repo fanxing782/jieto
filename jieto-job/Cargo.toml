@@ -1,0 +1,10 @@
+[package]
+name = "jieto-job"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+tokio-cron-scheduler = { workspace = true }

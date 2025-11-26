@@ -12,10 +12,22 @@ mod config;
 mod error;
 mod log4r;
 mod resp;
+
+#[cfg(feature = "job")]
+pub mod job;
 #[cfg(feature = "ws")]
 mod ws;
 
 pub use resp::ApiResult;
+
+#[cfg(feature = "job")]
+pub type TaskScheduler = jieto_job::TaskScheduler;
+
+#[cfg(not(feature = "job"))]
+#[derive(Debug, Clone)]
+pub struct TaskScheduler {
+    _private: (),
+}
 
 #[cfg(feature = "database")]
 pub static GLOBAL_DBMANAGER: OnceLock<Arc<DbManager>> = OnceLock::new();
@@ -50,6 +62,8 @@ where
 pub struct AppState {
     #[cfg(feature = "database")]
     pub db_manager: Arc<DbManager>,
+    #[cfg(feature = "job")]
+    pub scheduler: Arc<jieto_job::TaskScheduler>,
     #[cfg(feature = "ws")]
     pub ws_server: Option<jieto_ws::WsServerHandle>,
 }
@@ -61,6 +75,13 @@ impl AppState {
     }
 }
 
+#[cfg(feature = "job")]
+impl AppState {
+    fn with_job(&mut self, scheduler: Arc<jieto_job::TaskScheduler>) {
+        self.scheduler = scheduler;
+    }
+}
+
 #[cfg(feature = "ws")]
 impl AppState {
     fn with_ws(&mut self, server_tx: jieto_ws::WsServerHandle) {
@@ -68,14 +89,16 @@ impl AppState {
     }
 }
 
-pub async fn jieto_web_start<F, Init, Fut>(
+pub async fn jieto_web_start<I, F, S, Fut>(
     path: &str,
-    init: Init,
-    configure_fn: F,
+    init_fn: I,
+    configure_service: F,
+    configure_scheduler: S,
 ) -> anyhow::Result<()>
 where
-    F: Fn(&mut ServiceConfig) + Clone + Send + Sync + 'static,
-    Init: FnOnce() -> Fut + Send + 'static,
+    I: FnOnce() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send,
+    F: Fn(&mut ServiceConfig) + Send + Clone + 'static,
+    S: FnOnce(Arc<TaskScheduler>) -> Fut + Send,
     Fut: Future<Output = ()> + Send + 'static,
 {
     let config = ApplicationConfig::from_toml(path).await?;
@@ -83,6 +106,8 @@ where
     let mut state = AppState::default();
 
     init_logger(&config.log, &config.name.unwrap_or(String::from("app")))?;
+
+    init_fn().await;
 
     #[cfg(feature = "ws")]
     let ws_handle = {
@@ -92,6 +117,15 @@ where
         ws_server_handle
     };
 
+    #[cfg(feature = "job")]
+    {
+        let scheduler = jieto_job::TaskScheduler::new().await?;
+        let scheduler_arc = Arc::new(scheduler);
+        configure_scheduler(scheduler_arc.clone()).await;
+        scheduler_arc.start().await?;
+        state.with_job(scheduler_arc);
+    }
+
     #[cfg(feature = "database")]
     {
         let db_manager = jieto_db::jieto_db_init("db.toml").await?;
@@ -99,8 +133,6 @@ where
         let db_manager = GLOBAL_DBMANAGER.get_or_init(|| db_manager);
         state.with_db(db_manager.clone());
     }
-
-    init().await;
 
     let app_state = web::Data::new(state);
     let server = HttpServer::new(move || {
@@ -121,7 +153,7 @@ where
                     use crate::ws::configure_ws;
                     configure_ws(cfg, config.ws.path.as_deref());
                 }
-                configure_fn(cfg)
+                configure_service(cfg)
             })
     })
     .bind(("0.0.0.0", config.web.port))?

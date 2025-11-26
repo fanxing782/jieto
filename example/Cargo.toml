@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-jieto-web = {path = "../jieto-web",features = ["database", "mysql", "redis"]}
-tokio = {workspace = true}
-anyhow = {workspace = true}
+jieto-web = { path = "../jieto-web", features = ["database", "mysql", "redis"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
 actix-web = { workspace = true }
-sqlx = {workspace = true}
+sqlx = { workspace = true }
 serde = { workspace = true }
 deadpool-redis = { workspace = true }
