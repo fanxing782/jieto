@@ -28,7 +28,7 @@ pub fn scheduled(attr: TokenStream, item: TokenStream) -> TokenStream {
             pub const NAME: &'static str = stringify!(#fn_name);
         }
 
-        impl ScheduledTask for #wrapper_name {
+        impl jieto_web::job::ScheduledTask for #wrapper_name {
             fn cron_expression(&self) -> &'static str {
                 Self::CRON
             }

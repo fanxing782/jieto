@@ -70,6 +70,8 @@ impl TaskScheduler {
         })?;
 
         scheduler.add(job).await?;
+
+
         self.task_count.fetch_add(1, Ordering::SeqCst);
 
         log::info!("[job] successfully registered task: {}", task_name);
@@ -77,18 +79,26 @@ impl TaskScheduler {
     }
 
     pub async fn start(&self) -> Result<()> {
-        let scheduler = self
-            .scheduler
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("[job] job scheduler not initialized"))?;
+        let count = self.get_task_count();
+        if count == 0 {
+            log::info!(
+            "[job] The scheduler has no tasks");
+            Ok(())
+        }else{
+            let scheduler = self
+                .scheduler
+                .get()
+                .ok_or_else(|| anyhow::anyhow!("[job] job scheduler not initialized"))?;
 
-        scheduler.start().await?;
+            scheduler.start().await?;
 
-        log::info!(
-            "[job] scheduler started with {} tasks",
-            self.task_count.load(Ordering::SeqCst)
-        );
-        Ok(())
+            log::info!(
+            "[job] scheduler started with {count} tasks");
+            Ok(())
+        }
+
+
+
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
