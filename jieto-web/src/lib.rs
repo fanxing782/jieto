@@ -1,13 +1,12 @@
-use std::env;
 use crate::config::ApplicationConfig;
 use crate::error::WebError;
 use crate::log4r::init_logger;
 use actix_cors::Cors;
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
-use jieto_db::database::DbManager;
 use serde::Serialize;
-use std::sync::{Arc, OnceLock};
+use std::env;
+use std::sync::Arc;
 
 pub mod config;
 pub mod error;
@@ -24,6 +23,9 @@ pub use resp::ApiResult;
 #[cfg(feature = "job")]
 pub type TaskScheduler = jieto_job::TaskScheduler;
 
+#[cfg(feature = "database")]
+pub type DbManager = jieto_db::database::DbManager;
+
 #[cfg(not(feature = "job"))]
 #[derive(Debug, Clone)]
 pub struct TaskScheduler {
@@ -31,7 +33,7 @@ pub struct TaskScheduler {
 }
 
 #[cfg(feature = "database")]
-pub static GLOBAL_DBMANAGER: OnceLock<Arc<DbManager>> = OnceLock::new();
+pub static GLOBAL_DBMANAGER: std::sync::OnceLock<Arc<DbManager>> = std::sync::OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct BusinessError {
@@ -90,93 +92,7 @@ impl AppState {
     }
 }
 
-pub async fn jieto_web_start<I, F, S, Fut>(
-    path: &str,
-    init_fn: I,
-    configure_service: F,
-    configure_scheduler: S,
-) -> anyhow::Result<()>
-where
-    I: FnOnce() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send,
-    F: Fn(&mut ServiceConfig) + Send + Clone + 'static,
-    S: FnOnce(Arc<TaskScheduler>) -> Fut + Send,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    let config = ApplicationConfig::from_toml(path).await?;
-
-    let mut state = AppState::default();
-
-    init_logger(&config.log, &config.name.unwrap_or(String::from("app")))?;
-
-    init_fn().await;
-
-    #[cfg(feature = "ws")]
-    let ws_handle = {
-        let (ws_server, server_tx) = jieto_ws::WsServer::new();
-        let ws_server_handle = tokio::task::spawn(ws_server.run());
-        state.with_ws(server_tx);
-        ws_server_handle
-    };
-
-    #[cfg(feature = "job")]
-    {
-        let scheduler = jieto_job::TaskScheduler::new().await?;
-        let scheduler_arc = Arc::new(scheduler);
-        configure_scheduler(scheduler_arc.clone()).await;
-        scheduler_arc.start().await?;
-        state.with_job(scheduler_arc);
-    }
-
-    #[cfg(feature = "database")]
-    {
-        let db_manager = jieto_db::jieto_db_init("db.toml").await?;
-        let db_manager = Arc::new(db_manager);
-        let db_manager = GLOBAL_DBMANAGER.get_or_init(|| db_manager);
-        state.with_db(db_manager.clone());
-    }
-
-    let app_state = web::Data::new(state);
-    let server = HttpServer::new(move || {
-        let cors = Cors::default()
-            .allow_any_origin() // 允许任意域名（仅开发用！）
-            .allow_any_method()
-            .allow_any_header()
-            .supports_credentials() // 如果需要携带 cookie
-            .max_age(3600);
-
-        App::new()
-            .app_data(app_state.clone())
-            .wrap(cors)
-            .wrap(actix_web::middleware::Logger::default())
-            .configure(|cfg| {
-                #[cfg(feature = "ws")]
-                {
-                    use crate::ws::configure_ws;
-                    configure_ws(cfg, config.ws.path.as_deref());
-                }
-                configure_service(cfg)
-            })
-    })
-    .bind(("0.0.0.0", config.web.port))?
-    .run();
-
-    #[cfg(feature = "ws")]
-    {
-        tokio::try_join!(server, async move { ws_handle.await.unwrap() })?;
-    }
-
-    #[cfg(not(feature = "ws"))]
-    {
-        server.await?;
-    }
-
-    Ok(())
-}
-
-
-
-
-pub trait AppInitializing{
+pub trait AppInitializing {
     fn initializing(&self);
 }
 
@@ -185,39 +101,44 @@ where
     I: AppInitializing,
     F: Fn(&mut ServiceConfig) + Send + Clone + 'static,
 {
-    cfg:F,
-    init:Vec<I>
+    cfg: F,
+    init: Vec<I>,
+    #[cfg(feature = "job")]
+    tasks: Vec<Box<dyn jieto_job::ScheduledTask>>,
 }
 
-impl <I, F> Application<I, F>
+impl<I, F> Application<I, F>
 where
     I: AppInitializing,
     F: Fn(&mut ServiceConfig) + Send + Clone + 'static,
 {
-
-    pub fn new(cfg:F)->Self{
-        Self{
+    pub fn new(cfg: F) -> Self {
+        Self {
             cfg,
-            init:vec![],
+            init: vec![],
+            #[cfg(feature = "job")]
+            tasks: vec![],
         }
     }
 
-
-    pub fn bind_init(mut self,init:I)->Self{
+    pub fn bind_init(mut self, init: I) -> Self {
         self.init.push(init);
         self
     }
 
+    #[cfg(feature = "job")]
+    pub fn register_task(mut self, task: Box<dyn jieto_job::ScheduledTask>) -> Self {
+        self.tasks.push(task);
+        self
+    }
 
-    pub async fn run(mut self) ->anyhow::Result<()>{
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let config_path = env::var("APP_CONFIG")
             .or_else(|_| env::var("CONFIG_PATH"))
             .unwrap_or_else(|_| "application.toml".to_string()); // 默认路径
         let config = ApplicationConfig::from_toml(&config_path).await?;
         let mut state = AppState::default();
         init_logger(&config.log, &config.name.unwrap_or(String::from("app")))?;
-
-
 
         #[cfg(feature = "ws")]
         let ws_handle = {
@@ -227,7 +148,6 @@ where
             ws_server_handle
         };
 
-
         #[cfg(feature = "database")]
         {
             let db_manager = jieto_db::jieto_db_init(&config_path).await?;
@@ -236,14 +156,23 @@ where
             state.with_db(db_manager.clone());
         }
 
-        let app_state = web::Data::new(state);
-        let cfg_fn = self.cfg.clone();
-
-        while let Some(top) = self.init.pop() {
-            top.initializing();
+        while let Some(init) = self.init.pop() {
+            init.initializing();
         }
 
+        #[cfg(feature = "job")]
+        {
+            let scheduler = TaskScheduler::new().await?;
+            let scheduler = Arc::new(scheduler);
+            while let Some(task) = self.tasks.pop() {
+                scheduler.register_task(task).await?;
+            }
+            scheduler.start().await?;
+            state.with_job(scheduler);
+        }
 
+        let app_state = web::Data::new(state);
+        let cfg_fn = self.cfg.clone();
 
         let server = HttpServer::new(move || {
             let cors = Cors::default()
@@ -264,11 +193,11 @@ where
                         configure_ws(cfg, config.ws.path.as_deref());
                     }
 
-                   cfg_fn(cfg)
+                    cfg_fn(cfg)
                 })
         })
-            .bind(("0.0.0.0", config.web.port))?
-            .run();
+        .bind(("0.0.0.0", config.web.port))?
+        .run();
 
         #[cfg(feature = "ws")]
         {
