@@ -3,12 +3,9 @@ mod error;
 use actix_web::{get, web};
 use deadpool_redis::redis::cmd;
 use jieto_macros::{scheduled, task};
-use jieto_web::job::ScheduledTask;
 use jieto_web::{ApiResult, AppInitializing, AppScheduler, AppState, Application, JietoResult};
 use serde::Serialize;
 use sqlx::FromRow;
-use std::any::Any;
-use std::ops::Deref;
 
 #[derive(FromRow, Debug, Serialize)]
 pub struct User {
@@ -48,7 +45,7 @@ async fn redis_test(
 }
 
 #[scheduled("*/5 * * * * *")]
-async fn health_check_task(state: web::Data<AppState>) {
+async fn health_check_task(_state: web::Data<AppState>) {
     println!("Health check running every 5 seconds");
 }
 

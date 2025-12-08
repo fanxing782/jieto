@@ -2,9 +2,9 @@ use crate::task::ScheduledTask;
 use anyhow::Result;
 use std::any::Any;
 use std::fmt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use tokio::sync::OnceCell;
+use tokio::sync::Mutex;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 pub struct TaskScheduler {
@@ -46,10 +46,7 @@ impl TaskScheduler {
     }
 
     pub async fn register_task(&self, task: Box<dyn ScheduledTask>) -> Result<()> {
-        let mut guard = self
-            .scheduler
-            .lock()
-            .map_err(|e| anyhow::anyhow!("[job] failed to lock scheduler: {}", e))?;
+        let mut guard = self.scheduler.lock().await;
 
         let scheduler = guard.as_mut().ok_or_else(|| {
             anyhow::anyhow!("[job] job scheduler not initialized or already shutdown")
@@ -92,10 +89,7 @@ impl TaskScheduler {
             return Ok(());
         }
 
-        let mut guard = self
-            .scheduler
-            .lock()
-            .map_err(|e| anyhow::anyhow!("[job] failed to lock scheduler: {}", e))?;
+        let mut guard = self.scheduler.lock().await;
 
         let scheduler = guard.as_mut().ok_or_else(|| {
             anyhow::anyhow!("[job] job scheduler not initialized or already shutdown")
@@ -108,12 +102,9 @@ impl TaskScheduler {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        let mut guard = self
-            .scheduler
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Failed to lock scheduler: {}", e))?;
+        let mut guard = self.scheduler.lock().await;
 
-        if let Some(mut scheduler) = guard.as_mut() {
+        if let Some(scheduler) = guard.as_mut() {
             scheduler.shutdown().await?;
             self.is_started.store(false, Ordering::SeqCst);
             log::info!("[job] scheduler shutdown successfully");

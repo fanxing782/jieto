@@ -6,7 +6,6 @@ use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use serde::Serialize;
 use std::env;
-use std::ops::Deref;
 use std::sync::Arc;
 
 pub mod config;

@@ -27,7 +27,8 @@ pub fn scheduled(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let wrapper = syn::Ident::new(&format!("__JietoScheduled_{}", fn_name), fn_name.span());
+    let wrapper_name = to_upper_camel_case(fn_name);
+    let wrapper = syn::Ident::new(&wrapper_name, fn_name.span());
 
     let expanded = quote! {
         #input_fn
@@ -72,11 +73,32 @@ pub fn scheduled(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn task(input: TokenStream) -> TokenStream {
     let fn_name = parse_macro_input!(input as syn::Ident);
-    let wrapper_name = syn::Ident::new(&format!("__JietoScheduled_{}", fn_name), fn_name.span());
+    let wrapper_name = to_upper_camel_case(&fn_name);
+    let wrapper = syn::Ident::new(&wrapper_name, fn_name.span());
 
     let expanded = quote! {
-        Box::new(#wrapper_name) as Box<dyn jieto_web::job::ScheduledTask>
+        Box::new(#wrapper) as Box<dyn jieto_web::job::ScheduledTask>
     };
 
     TokenStream::from(expanded)
+}
+
+fn to_upper_camel_case(ident: &syn::Ident) -> String {
+    let name = ident.to_string();
+    if name.is_empty() {
+        return name;
+    }
+
+    let parts: Vec<&str> = name.split('_').collect();
+    let converted: String = parts.iter()
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect();
+
+    format!("JietoScheduled{}", converted)
 }
