@@ -1,21 +1,26 @@
 use crate::task::ScheduledTask;
 use anyhow::Result;
+use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::OnceCell;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::sync::Mutex;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 pub struct TaskScheduler {
-    scheduler: OnceCell<JobScheduler>,
+    scheduler: Mutex<Option<JobScheduler>>,
+    app_state: Arc<dyn Any + Send + Sync>,
     task_count: AtomicUsize,
+    is_started: AtomicBool,
 }
 
 impl Default for TaskScheduler {
     fn default() -> Self {
         Self {
-            scheduler: OnceCell::new(),
+            scheduler: Mutex::new(None),
+            app_state: Arc::new(()),
             task_count: AtomicUsize::new(0),
+            is_started: AtomicBool::new(false),
         }
     }
 }
@@ -29,25 +34,25 @@ impl fmt::Debug for TaskScheduler {
 }
 
 impl TaskScheduler {
-    pub async fn new() -> Result<Self> {
-        let job_scheduler_cell = OnceCell::new();
+    pub async fn new(app_state: Arc<dyn Any + Send + Sync>) -> Result<Self> {
         let job_scheduler = JobScheduler::new().await?;
-        job_scheduler_cell
-            .set(job_scheduler)
-            .map_err(|_| anyhow::anyhow!("[job] failed to initialize job scheduler"))?;
 
         Ok(Self {
-            scheduler: job_scheduler_cell,
+            scheduler: Mutex::new(Some(job_scheduler)),
+            app_state,
             task_count: AtomicUsize::new(0),
+            is_started: AtomicBool::new(false),
         })
     }
 
     pub async fn register_task(&self, task: Box<dyn ScheduledTask>) -> Result<()> {
-        let scheduler = self
-            .scheduler
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("[job] job scheduler not initialized"))?;
+        let mut guard = self.scheduler.lock().await;
 
+        let scheduler = guard.as_mut().ok_or_else(|| {
+            anyhow::anyhow!("[job] job scheduler not initialized or already shutdown")
+        })?;
+
+        let app_state = Arc::clone(&self.app_state);
         let cron_expr = task.cron_expression().to_string();
         let task_name = task.task_name().to_string();
 
@@ -57,20 +62,19 @@ impl TaskScheduler {
             cron_expr
         );
 
-        // Wrap task in Arc for sharing across async boundaries
         let task = Arc::new(task);
 
         let job = Job::new_async(cron_expr.as_str(), move |_uuid, _lock| {
             let task = Arc::clone(&task);
+            let state = Arc::clone(&app_state);
             Box::pin(async move {
                 log::debug!("️[job] [{}] starting execution...", task.task_name());
-                task.execute().await;
+                task.execute(state).await;
                 log::debug!("[job] [{}] completed execution", task.task_name());
             })
         })?;
 
         scheduler.add(job).await?;
-
 
         self.task_count.fetch_add(1, Ordering::SeqCst);
 
@@ -81,29 +85,28 @@ impl TaskScheduler {
     pub async fn start(&self) -> Result<()> {
         let count = self.get_task_count();
         if count == 0 {
-            log::info!(
-            "[job] The scheduler has no tasks");
-            Ok(())
-        }else{
-            let scheduler = self
-                .scheduler
-                .get()
-                .ok_or_else(|| anyhow::anyhow!("[job] job scheduler not initialized"))?;
-
-            scheduler.start().await?;
-
-            log::info!(
-            "[job] scheduler started with {count} tasks");
-            Ok(())
+            log::info!("[job] The scheduler has no tasks");
+            return Ok(());
         }
 
+        let mut guard = self.scheduler.lock().await;
 
+        let scheduler = guard.as_mut().ok_or_else(|| {
+            anyhow::anyhow!("[job] job scheduler not initialized or already shutdown")
+        })?;
 
+        scheduler.start().await?;
+        self.is_started.store(true, Ordering::SeqCst);
+        log::info!("[job] scheduler started with {count} tasks");
+        Ok(())
     }
 
-    pub async fn shutdown(&mut self) -> Result<()> {
-        if let Some(scheduler) = self.scheduler.get_mut() {
+    pub async fn shutdown(&self) -> Result<()> {
+        let mut guard = self.scheduler.lock().await;
+
+        if let Some(scheduler) = guard.as_mut() {
             scheduler.shutdown().await?;
+            self.is_started.store(false, Ordering::SeqCst);
             log::info!("[job] scheduler shutdown successfully");
         }
         Ok(())
@@ -111,5 +114,9 @@ impl TaskScheduler {
 
     pub fn get_task_count(&self) -> usize {
         self.task_count.load(Ordering::SeqCst)
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.is_started.load(Ordering::SeqCst)
     }
 }

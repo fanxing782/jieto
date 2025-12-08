@@ -1,5 +1,7 @@
+use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 pub trait ScheduledTask: Send + Sync {
     /// Returns the cron expression for this task
@@ -9,5 +11,8 @@ pub trait ScheduledTask: Send + Sync {
     fn task_name(&self) -> &'static str;
 
     /// Executes the task logic
-    fn execute(&self) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+    fn execute(
+        &self,
+        injected: Arc<dyn Any + Send + Sync>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 }

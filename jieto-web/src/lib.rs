@@ -65,11 +65,12 @@ where
 pub struct AppState {
     #[cfg(feature = "database")]
     pub db_manager: Arc<DbManager>,
-    #[cfg(feature = "job")]
-    pub scheduler: Arc<jieto_job::TaskScheduler>,
     #[cfg(feature = "ws")]
     pub ws_server: Option<jieto_ws::WsServerHandle>,
 }
+
+#[derive(Default, Debug)]
+pub struct AppScheduler(#[cfg(feature = "job")] pub Arc<jieto_job::TaskScheduler>);
 
 #[cfg(feature = "database")]
 impl AppState {
@@ -78,17 +79,17 @@ impl AppState {
     }
 }
 
-#[cfg(feature = "job")]
-impl AppState {
-    fn with_job(&mut self, scheduler: Arc<jieto_job::TaskScheduler>) {
-        self.scheduler = scheduler;
-    }
-}
-
 #[cfg(feature = "ws")]
 impl AppState {
     fn with_ws(&mut self, server_tx: jieto_ws::WsServerHandle) {
         self.ws_server = Some(server_tx);
+    }
+}
+
+#[cfg(feature = "job")]
+impl AppScheduler {
+    fn with_job(&mut self, scheduler: Arc<jieto_job::TaskScheduler>) {
+        self.0 = scheduler;
     }
 }
 
@@ -138,6 +139,7 @@ where
             .unwrap_or_else(|_| "application.toml".to_string()); // 默认路径
         let config = ApplicationConfig::from_toml(&config_path).await?;
         let mut state = AppState::default();
+        let mut scheduler = AppScheduler::default();
         init_logger(&config.log, &config.name.unwrap_or(String::from("app")))?;
 
         #[cfg(feature = "ws")]
@@ -160,18 +162,20 @@ where
             init.initializing();
         }
 
+        let app_state = web::Data::new(state);
+
         #[cfg(feature = "job")]
         {
-            let scheduler = TaskScheduler::new().await?;
-            let scheduler = Arc::new(scheduler);
+            let task_scheduler = TaskScheduler::new(Arc::new(app_state.clone())).await?;
+            let task_scheduler = Arc::new(task_scheduler);
             while let Some(task) = self.tasks.pop() {
-                scheduler.register_task(task).await?;
+                task_scheduler.register_task(task).await?;
             }
-            scheduler.start().await?;
-            state.with_job(scheduler);
+            task_scheduler.start().await?;
+            scheduler.with_job(task_scheduler);
         }
 
-        let app_state = web::Data::new(state);
+        let app_scheduler = web::Data::new(scheduler);
         let cfg_fn = self.cfg.clone();
 
         let server = HttpServer::new(move || {
@@ -184,6 +188,7 @@ where
 
             App::new()
                 .app_data(app_state.clone())
+                .app_data(app_scheduler.clone())
                 .wrap(cors)
                 .wrap(actix_web::middleware::Logger::default())
                 .configure(|cfg| {

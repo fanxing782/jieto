@@ -33,7 +33,7 @@ pub(crate) struct Log {
 pub(crate) struct Ws {
     #[serde(default)]
     pub path: Option<String>,
-    pub heartbeat_interval: Option<u64>,
+    // pub heartbeat_interval: Option<u64>,
 }
 
 impl ApplicationConfig {
