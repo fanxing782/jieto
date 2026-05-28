@@ -31,3 +31,17 @@ pub fn generate_totp_url(account_name: SecretBox<str>,issuer:Option<String>,digi
     )?;
     Ok(totp.get_url())
 }
+
+pub fn select_top_code(account_name: SecretBox<str>,digits:usize,skew:u8,step:u64,secret: SecretBox<str>, code:SecretBox<str>,)-> anyhow::Result<String,AuthError> {
+    let secret = Secret::Encoded(secret.expose_secret().to_string());
+    let totp = TOTP::new(
+        Algorithm::SHA1,
+        digits,
+        skew,
+        step,
+        secret.to_bytes()?,
+        None,
+        String::from(account_name.expose_secret())
+    )?;
+    Ok(totp.generate_current()?)
+}
